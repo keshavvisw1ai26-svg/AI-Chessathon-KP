@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chessathon Agent</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+  :root {
+    --dark: #b58863; --light: #f0d9b5; --bg: #1e1e22; --panel: #2a2a30;
+    --text: #e8e6e3; --muted: #9a978f; --accent: #7fb069; --sel: #829769;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex; justify-content: center; padding: 24px;
+  }
+  .wrap { display: flex; gap: 20px; flex-wrap: wrap; max-width: 980px; }
+  .left { display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.3px; }
+  h1 span { color: var(--accent); }
+  #board {
+    display: grid; grid-template-columns: repeat(8, 64px);
+    grid-template-rows: repeat(8, 64px);
+    border: 3px solid #444; border-radius: 4px; user-select: none;
+  }
+  .sq { width: 64px; height: 64px; display: flex; align-items: center;
+        justify-content: center; font-size: 44px; cursor: pointer; position: relative; }
+  .sq.light { background: var(--light); } .sq.dark { background: var(--dark); }
+  .sq.sel { outline: 3px solid var(--sel); outline-offset: -3px; }
+  .sq.last { box-shadow: inset 0 0 0 64px rgba(155, 199, 0, 0.25); }
+  .sq .dot { position: absolute; width: 16px; height: 16px; border-radius: 50%;
+             background: rgba(20, 60, 20, 0.35); pointer-events: none; }
+  .wp { color: #fff; text-shadow: 0 1px 2px #0008; }
+  .bp { color: #1b1b1b; text-shadow: 0 1px 1px #fff3; }
+  .panel { background: var(--panel); border-radius: 8px; padding: 14px 16px; }
+  .about { max-width: 512px; font-size: 13px; line-height: 1.55; color: var(--muted); }
+  .about b { color: var(--text); font-weight: 600; }
+  .side { width: 300px; display: flex; flex-direction: column; gap: 14px; }
+  #status { font-size: 14px; min-height: 20px; }
+  #status.thinking { color: var(--accent); }
+  #moves { flex: 1; overflow-y: auto; max-height: 430px; font-size: 14px; }
+  #moves table { width: 100%; border-collapse: collapse; }
+  #moves td { padding: 3px 6px; }
+  #moves td.num { color: var(--muted); width: 36px; }
+  #moves tr:nth-child(odd) { background: #ffffff08; }
+  button {
+    background: var(--accent); color: #14210f; border: 0; border-radius: 6px;
+    padding: 9px 14px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  .row { display: flex; gap: 10px; align-items: center; }
+  select { background: var(--panel); color: var(--text); border: 1px solid #444;
+           border-radius: 6px; padding: 8px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <h1>Chessathon <span>Agent</span></h1>
+    <div id="board"></div>
+    <div class="panel about">
+      <b>How this agent was trained.</b> The engine is a compiled alpha-beta search written in
+      Python and JIT-compiled with numba, reaching about a million positions per second on one
+      CPU core. Its evaluation is a small neural network, a 768 to 512 NNUE with two
+      perspectives and eight output buckets, trained on over 150 million chess positions from
+      the public Lichess evaluation database, each labeled by deep Stockfish analysis. The
+      network is quantized to integers and updated incrementally as the search makes and
+      unmakes moves, so a full evaluation costs about a microsecond. The agent also tracks
+      repetitions, manages its clock, and thinks on the opponent's time.
+    </div>
+  </div>
+  <div class="side">
+    <div class="panel row">
+      <button id="newBtn">New game</button>
+      <select id="colorSel">
+        <option value="w">Play as White</option>
+        <option value="b">Play as Black</option>
+      </select>
+    </div>
+    <div class="panel" id="status">Connecting to agent...</div>
+    <div class="panel" id="moves"><table><tbody id="movesBody"></tbody></table></div>
+  </div>
+</div>
+<script>
+const API = (location.protocol === "file:" || location.hostname === "localhost" ||
+             location.hostname === "127.0.0.1")
+            ? "http://127.0.0.1:8360" : (window.AGENT_API || "http://127.0.0.1:8360");
+const PIECES = { p:"♟", n:"♞", b:"♝", r:"♜", q:"♛", k:"♚" };
+let game = new Chess();
+let humanColor = "w";
+let selected = null;
+let lastMove = null;
+let busy = false;
+
+const boardEl = document.getElementById("board");
+const statusEl = document.getElementById("status");
+const movesBody = document.getElementById("movesBody");
+
+function squares() {
+  const files = "abcdefgh".split(""), out = [];
+  const ranks = humanColor === "w" ? [8,7,6,5,4,3,2,1] : [1,2,3,4,5,6,7,8];
+  const fs = humanColor === "w" ? files : files.slice().reverse();
+  for (const r of ranks) for (const f of fs) out.push(f + r);
+  return out;
+}
+
+function render() {
+  boardEl.innerHTML = "";
+  const legalTargets = selected
+    ? game.moves({ square: selected, verbose: true }).map(m => m.to) : [];
+  squares().forEach((sq, i) => {
+    const d = document.createElement("div");
+    const fileIdx = sq.charCodeAt(0) - 97, rankIdx = parseInt(sq[1]);
+    d.className = "sq " + (((fileIdx + rankIdx) % 2 === 0) ? "dark" : "light");
+    if (sq === selected) d.classList.add("sel");
+    if (lastMove && (sq === lastMove.from || sq === lastMove.to)) d.classList.add("last");
+    const p = game.get(sq);
+    if (p) {
+      d.textContent = PIECES[p.type];
+      d.classList.add(p.color === "w" ? "wp" : "bp");
+      if (p.color === humanColor) {
+        d.draggable = true;
+        d.ondragstart = (ev) => {
+          if (busy || game.turn() !== humanColor || gameOverMsg()) { ev.preventDefault(); return; }
+          selected = sq;
+          ev.dataTransfer.setData("text", sq);
+          setTimeout(render, 0);
+        };
+      }
+    }
+    d.ondragover = (ev) => ev.preventDefault();
+    d.ondrop = (ev) => {
+      ev.preventDefault();
+      const from = ev.dataTransfer.getData("text");
+      if (!from || busy || game.turn() !== humanColor) return;
+      const mv = game.move({ from: from, to: sq, promotion: "q" });
+      selected = null;
+      if (mv) { lastMove = mv; afterMove(); } else { render(); }
+    };
+    if (legalTargets.includes(sq) && !p) {
+      const dot = document.createElement("div"); dot.className = "dot"; d.appendChild(dot);
+    }
+    d.onclick = () => clickSquare(sq);
+    boardEl.appendChild(d);
+  });
+  renderMoves();
+}
+
+function renderMoves() {
+  movesBody.innerHTML = "";
+  const hist = game.history();
+  for (let i = 0; i < hist.length; i += 2) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="num">${i / 2 + 1}.</td><td>${hist[i]}</td><td>${hist[i + 1] || ""}</td>`;
+    movesBody.appendChild(tr);
+  }
+  movesBody.parentElement.parentElement.scrollTop = 1e9;
+}
+
+function setStatus(msg, thinking) {
+  statusEl.textContent = msg;
+  statusEl.className = thinking ? "thinking" : "";
+}
+
+function gameOverMsg() {
+  if (game.in_checkmate()) return game.turn() === humanColor ? "Checkmate. The agent wins." : "Checkmate. You win!";
+  if (game.in_stalemate()) return "Draw by stalemate.";
+  if (game.in_threefold_repetition()) return "Draw by repetition.";
+  if (game.insufficient_material()) return "Draw by insufficient material.";
+  if (game.in_draw()) return "Draw.";
+  return null;
+}
+
+function afterMove() {
+  render();
+  const over = gameOverMsg();
+  if (over) { setStatus(over); return; }
+  if (game.turn() !== humanColor) agentMove();
+  else setStatus("Your move.");
+}
+
+function clickSquare(sq) {
+  if (busy || game.turn() !== humanColor || gameOverMsg()) return;
+  const p = game.get(sq);
+  if (selected) {
+    const mv = game.move({ from: selected, to: sq, promotion: "q" });
+    selected = null;
+    if (mv) { lastMove = mv; afterMove(); return; }
+  }
+  selected = (p && p.color === humanColor) ? sq : null;
+  render();
+}
+
+async function agentMove() {
+  busy = true;
+  setStatus("Agent is thinking...", true);
+  try {
+    const res = await fetch(API + "/move", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fen: game.fen(), time_left_ms: 15000 }),
+    });
+    const data = await res.json();
+    const mv = game.move({ from: data.move.slice(0, 2), to: data.move.slice(2, 4),
+                           promotion: data.move.length > 4 ? data.move[4] : "q" });
+    lastMove = mv;
+    busy = false;
+    if (!mv) { setStatus("Agent returned an unexpected move: " + data.move); return; }
+    const info = data.depth ? ` (depth ${data.depth}, ${(data.time_s).toFixed(1)}s)` : "";
+    render();
+    const over = gameOverMsg();
+    setStatus(over || "Your move." + info);
+  } catch (e) {
+    busy = false;
+    setStatus("Cannot reach the agent server. Run: python web/server.py");
+  }
+}
+
+async function newGame() {
+  humanColor = document.getElementById("colorSel").value;
+  game = new Chess(); selected = null; lastMove = null; busy = false;
+  try { await fetch(API + "/new", { method: "POST" }); } catch (e) {}
+  render();
+  if (game.turn() !== humanColor) agentMove();
+  else setStatus("Your move. You are " + (humanColor === "w" ? "White." : "Black."));
+}
+
+document.getElementById("newBtn").onclick = newGame;
+document.getElementById("colorSel").onchange = newGame;
+newGame();
+</script>
+</body>
+</html>
