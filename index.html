@@ -61,14 +61,14 @@
     <h1>Chessathon <span>Agent</span></h1>
     <div id="board"></div>
     <div class="panel about">
-      <b>How this agent was trained.</b> The engine is a compiled alpha-beta search written in
+      <b>How this agent was built.</b> The competition engine is an alpha-beta search written in
       Python and JIT-compiled with numba, reaching about a million positions per second on one
       CPU core. Its evaluation is a small neural network, a 768 to 512 NNUE with two
       perspectives and eight output buckets, trained on over 150 million chess positions from
       the public Lichess evaluation database, each labeled by deep Stockfish analysis. The
       network is quantized to integers and updated incrementally as the search makes and
-      unmakes moves, so a full evaluation costs about a microsecond. The agent also tracks
-      repetitions, manages its clock, and thinks on the opponent's time.
+      unmakes moves. This page runs a JavaScript port of the same search and the same trained
+      network directly in your browser, so nothing is sent anywhere and no server is needed.
     </div>
   </div>
   <div class="side">
@@ -79,14 +79,33 @@
         <option value="b">Play as Black</option>
       </select>
     </div>
-    <div class="panel" id="status">Connecting to agent...</div>
+    <div class="panel row">
+      <label for="levelSel">Think time</label>
+      <select id="levelSel">
+        <option value="300">0.3 s</option>
+        <option value="1000" selected>1 s</option>
+        <option value="3000">3 s</option>
+        <option value="8000">8 s</option>
+      </select>
+    </div>
+    <div class="panel" id="status">Loading engine...</div>
     <div class="panel" id="moves"><table><tbody id="movesBody"></tbody></table></div>
   </div>
 </div>
 <script>
-const API = (location.protocol === "file:" || location.hostname === "localhost" ||
-             location.hostname === "127.0.0.1")
-            ? "http://127.0.0.1:8360" : (window.AGENT_API || "http://127.0.0.1:8360");
+// The engine (web/engine.js, a port of the numba search core) runs in a Web Worker inside
+// this page, so the site works as a static GitHub Pages deployment with no server.
+const engine = new Worker("engine.js");
+let engineReady = false;
+let pendingMove = null;
+engine.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === "ready") { engineReady = true; if (pendingMove) { const f = pendingMove; pendingMove = null; f(); } else if (!busy) setStatus("Your move."); }
+  else if (m.type === "move") { if (pendingMove) { const f = pendingMove; pendingMove = null; f(m); } }
+  else if (m.type === "error") { busy = false; setStatus("Engine error: " + m.message); }
+};
+engine.onerror = (e) => { busy = false; setStatus("Engine failed to load: " + (e.message || e)); };
+engine.postMessage({ cmd: "init", weightsUrl: "weights.bin" });
 const PIECES = { p:"♟", n:"♞", b:"♝", r:"♜", q:"♛", k:"♚" };
 let game = new Chess();
 let humanColor = "w";
@@ -193,34 +212,38 @@ function clickSquare(sq) {
   render();
 }
 
-async function agentMove() {
+function uciHistory() {
+  return game.history({ verbose: true }).map(m => m.from + m.to + (m.promotion || ""));
+}
+
+function agentMove() {
   busy = true;
+  if (!engineReady) { setStatus("Loading engine...", true); pendingMove = agentMove; return; }
   setStatus("Agent is thinking...", true);
-  try {
-    const res = await fetch(API + "/move", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fen: game.fen(), time_left_ms: 15000 }),
-    });
-    const data = await res.json();
+  const soft = parseInt(document.getElementById("levelSel").value, 10) || 1000;
+  const myGame = game;
+  pendingMove = (data) => {
+    if (game !== myGame) return;  // a new game started while thinking
+    busy = false;
+    if (!data.move) { setStatus("Agent has no legal move."); return; }
     const mv = game.move({ from: data.move.slice(0, 2), to: data.move.slice(2, 4),
                            promotion: data.move.length > 4 ? data.move[4] : "q" });
     lastMove = mv;
-    busy = false;
     if (!mv) { setStatus("Agent returned an unexpected move: " + data.move); return; }
-    const info = data.depth ? ` (depth ${data.depth}, ${(data.time_s).toFixed(1)}s)` : "";
+    const sc = Math.abs(data.score) > 31000 ? "mate" : (data.score / 100).toFixed(2);
+    const info = ` (depth ${data.depth}, eval ${sc}, ${(data.nodes / 1000).toFixed(0)}k nodes, ${(data.timeMs / 1000).toFixed(1)}s)`;
     render();
     const over = gameOverMsg();
     setStatus(over || "Your move." + info);
-  } catch (e) {
-    busy = false;
-    setStatus("Cannot reach the agent server. Run: python web/server.py");
-  }
+  };
+  engine.postMessage({ cmd: "go", fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                       moves: uciHistory(), softMs: soft, hardMs: soft * 2 });
 }
 
-async function newGame() {
+function newGame() {
   humanColor = document.getElementById("colorSel").value;
-  game = new Chess(); selected = null; lastMove = null; busy = false;
-  try { await fetch(API + "/new", { method: "POST" }); } catch (e) {}
+  game = new Chess(); selected = null; lastMove = null; busy = false; pendingMove = null;
+  engine.postMessage({ cmd: "new" });
   render();
   if (game.turn() !== humanColor) agentMove();
   else setStatus("Your move. You are " + (humanColor === "w" ? "White." : "Black."));

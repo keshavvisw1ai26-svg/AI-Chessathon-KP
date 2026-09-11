@@ -1,27 +1,23 @@
 # AI Chessathon Agent
 
-Play against a chess agent built for the AI Chessathon: a numba-compiled alpha-beta search
-(about a million positions per second on one CPU core) with an NNUE evaluation, a 768 to 512
-two-perspective network with eight output buckets, trained on 150+ million positions from the
-public Lichess evaluation database labeled by deep Stockfish analysis.
+Play against a chess agent built for the AI Chessathon: an alpha-beta search with an NNUE
+evaluation, a 768 to 512 two-perspective network with eight output buckets, trained on 150+
+million positions from the public Lichess evaluation database labeled by deep Stockfish analysis.
 
 ## Play
 
-The board UI is hosted on GitHub Pages, but the engine is Python and runs on your machine:
+**https://keshavvisw1ai26-svg.github.io/AI-Chessathon-KP/**
 
-```
-git clone https://github.com/keshavvisw1ai26-svg/AI-Chessathon-KP
-cd AI-Chessathon-KP
-pip install chess numpy numba
-python server.py
-```
-
-Then open the Pages site (or http://127.0.0.1:8360). The page connects to the engine at
-127.0.0.1:8360. First start takes about a minute while numba compiles the engine.
+The whole engine runs inside the page (a JavaScript port of the competition engine, executing
+in a Web Worker with the same trained network), so there is nothing to install or run.
+Pick a think time in the sidebar; longer means stronger.
 
 ## Files
 
 - `index.html` - the board UI (click or drag to move, move list sidebar)
-- `server.py` - local server wrapping the agent
-- `agent.py` / `engine.py` - the agent: search core, time management, game state
-- `weights.npz` - the trained, integer-quantized NNUE
+- `engine.js` - the engine, ported to JavaScript: 0x88 board, PVS search with TT / null move /
+  LMR / futility / history, quiescence with SEE, incremental NNUE accumulator
+- `weights.bin` - the trained, integer-quantized NNUE (flat binary; made by `export_weights.py`
+  from the `weights.npz` used by the Python engine)
+- `agent.py` / `engine.py` - the original Python competition agent (numba-compiled search
+  core, time management, game state); not needed to play in the browser
