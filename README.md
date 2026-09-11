@@ -21,3 +21,7 @@ Pick a think time in the sidebar; longer means stronger.
   from the `weights.npz` used by the Python engine)
 - `agent.py` / `engine.py` - the original Python competition agent (numba-compiled search
   core, time management, game state); not needed to play in the browser
+
+## Credits
+
+Piece images are the "cburnett" set by Colin M.L. Burnett (CC BY-SA 3.0, via Wikimedia Commons).
